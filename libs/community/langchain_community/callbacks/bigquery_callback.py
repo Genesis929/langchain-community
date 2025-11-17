@@ -47,12 +47,12 @@ class AsyncBigQueryCallbackHandler(AsyncCallbackHandler):
     """
     Callback Handler that logs to Google BigQuery.
 
-    This plugin captures key events during an agent's lifecycle—such as user
+    This handler captures key events during an agent's lifecycle—such as user
     interactions, tool executions, LLM requests/responses, and errors—and
     streams them to a BigQuery table for analysis and monitoring.
 
     It uses the BigQuery Write API for efficient, high-throughput streaming
-    ingestion. If the destination table does not exist, the plugin will
+    ingestion. If the destination table does not exist, the handler will
     attempt to create it based on a predefined schema.
     """
 
@@ -496,6 +496,9 @@ class AsyncBigQueryCallbackHandler(AsyncCallbackHandler):
         """
         Shuts down the callback handler, ensuring all logs are flushed and clients are
         properly closed. This should be called before application exit.
+
+        Once your Langchain application has completed its tasks, ensure that you call
+        the `close` method to finalize the logging process.
         """
         logging.info("BQ Callback: Shutdown started.")
 
@@ -664,12 +667,12 @@ class BigQueryCallbackHandler(BaseCallbackHandler):
     """
     Callback Handler that logs to Google BigQuery.
 
-    This plugin captures key events during an agent's lifecycle—such as user
+    This handler captures key events during an agent's lifecycle—such as user
     interactions, tool executions, LLM requests/responses, and errors—and
     streams them to a BigQuery table for analysis and monitoring.
 
     It uses the BigQuery Write API for efficient, high-throughput streaming
-    ingestion. If the destination table does not exist, the plugin will
+    ingestion. If the destination table does not exist, the handler will
     attempt to create it based on a predefined schema.
     """
 
@@ -1250,6 +1253,9 @@ class BigQueryCallbackHandler(BaseCallbackHandler):
         """
         Shuts down the callback handler, ensuring all logs are flushed and clients are
         properly closed. This should be called before application exit.
+
+        Once your Langchain application has completed its tasks, ensure that you call
+        the `close` method to finalize the logging process.
         """
         logging.info("BQ Callback: Shutdown started.")
 
