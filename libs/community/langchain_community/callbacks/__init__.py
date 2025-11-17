@@ -23,6 +23,9 @@ if TYPE_CHECKING:
     from langchain_community.callbacks.arthur_callback import (
         ArthurCallbackHandler,
     )
+    from langchain_community.callbacks.bigquery_callback import (
+        BigQueryCallbackHandler,
+    )
     from langchain_community.callbacks.clearml_callback import (
         ClearMLCallbackHandler,
     )
@@ -93,6 +96,7 @@ _module_lookup = {
     "ArgillaCallbackHandler": "langchain_community.callbacks.argilla_callback",
     "ArizeCallbackHandler": "langchain_community.callbacks.arize_callback",
     "ArthurCallbackHandler": "langchain_community.callbacks.arthur_callback",
+    "BigQueryCallbackHandler": "langchain_community.callbacks.bigquery_callback",
     "ClearMLCallbackHandler": "langchain_community.callbacks.clearml_callback",
     "CometCallbackHandler": "langchain_community.callbacks.comet_ml_callback",
     "ContextCallbackHandler": "langchain_community.callbacks.context_callback",
@@ -131,6 +135,7 @@ __all__ = [
     "ArgillaCallbackHandler",
     "ArizeCallbackHandler",
     "ArthurCallbackHandler",
+    "BigQueryCallbackHandler",
     "ClearMLCallbackHandler",
     "CometCallbackHandler",
     "ContextCallbackHandler",
