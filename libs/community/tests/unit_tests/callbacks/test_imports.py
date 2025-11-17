@@ -28,6 +28,8 @@ EXPECTED_ALL = [
     "UpTrainCallbackHandler",
     "UpstashRatelimitError",
     "UpstashRatelimitHandler",
+    "AsyncBigQueryCallbackHandler",
+    "BigQueryCallbackHandler",
 ]
 
 
