@@ -338,6 +338,33 @@ def test_sync_on_retriever_end(
     assert mock_write_client.append_rows.call_count == 1
 
 
+def test_sync_ensure_init_creates_dataset_and_table(
+    mock_bigquery_clients: Dict[str, Any]
+) -> None:
+    """Test that sync _ensure_init creates dataset and table if they don't exist."""
+    handler = BigQueryCallbackHandler(
+        project_id="test-project",
+        dataset_id="test_dataset",
+        table_id="test_table",
+    )
+    initialized = handler._ensure_init()
+
+    assert initialized is True
+    mock_bq_client = mock_bigquery_clients["mock_bq_client"]
+    mock_bq_client.create_dataset.assert_called_once_with("test_dataset", exists_ok=True)
+    mock_bq_client.create_table.assert_called_once()
+
+
+def test_sync_init_failure(mock_bigquery_clients: Dict[str, Any]) -> None:
+    """Test that sync initialization failure is handled gracefully."""
+    mock_bigquery_clients["mock_google_auth"].default.side_effect = Exception(
+        "Auth failed"
+    )
+    handler = BigQueryCallbackHandler(project_id="test-project", dataset_id="test_dataset")
+    initialized = handler._ensure_init()
+    assert not initialized
+
+
 @pytest.mark.asyncio
 async def test_ensure_init_creates_dataset_and_table(
     mock_bigquery_clients: Dict[str, Any]

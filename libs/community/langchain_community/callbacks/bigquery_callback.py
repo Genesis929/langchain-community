@@ -61,6 +61,7 @@ class AsyncBigQueryCallbackHandler(AsyncCallbackHandler):
         project_id: str,
         dataset_id: str,
         table_id: str = "agent_events",
+        max_content_length: int = 200 * 1024,
     ):
         """Initializes the BigQueryCallbackHandler.
 
@@ -68,6 +69,7 @@ class AsyncBigQueryCallbackHandler(AsyncCallbackHandler):
           project_id: Google Cloud project ID.
           dataset_id: BigQuery dataset ID.
           table_id: BigQuery table ID for agent events.
+          max_content_length: The maximum length of content to log before truncating.
         """
         super().__init__()
         (
@@ -86,6 +88,7 @@ class AsyncBigQueryCallbackHandler(AsyncCallbackHandler):
             dataset_id,
             table_id,
         )
+        self._max_content_length = max_content_length
         self._bq_client = None
         self._write_client = None
         self._init_lock = asyncio.Lock()
@@ -100,6 +103,7 @@ class AsyncBigQueryCallbackHandler(AsyncCallbackHandler):
             self.bigquery.SchemaField("tags", "STRING"),
             self.bigquery.SchemaField("metadata", "STRING"),
             self.bigquery.SchemaField("error_message", "STRING"),
+            self.bigquery.SchemaField("is_truncated", "BOOLEAN"),
         ]
         self.action_records: list = []
 
@@ -217,6 +221,13 @@ class AsyncBigQueryCallbackHandler(AsyncCallbackHandler):
         ]
         return self.pa.schema(arrow_fields)
 
+    def _truncate_content_safely(self, content: str) -> str:
+        """Truncates the content string if it exceeds the configured max length."""
+        if len(content.encode("utf-8")) > self._max_content_length:
+            truncated_content = content.encode("utf-8")[: self._max_content_length].decode("utf-8", "ignore")
+            return f"{truncated_content} [TRUNCATED_MAX_BYTES:{self._max_content_length}]"
+        return content
+
     async def _log(self, data: dict) -> None:
         """Schedules a log entry to be written."""
         row = {
@@ -229,6 +240,7 @@ class AsyncBigQueryCallbackHandler(AsyncCallbackHandler):
             "tags": None,
             "metadata": None,
             "error_message": None,
+            "is_truncated": False,
         }
         row.update(data)
 
@@ -281,16 +293,18 @@ class AsyncBigQueryCallbackHandler(AsyncCallbackHandler):
         **kwargs: Any,
     ) -> None:
         """Run when LLM starts."""
+        content_str = json.dumps({"prompts": prompts})
         data = {
             "event_type": "LLM_START",
             "run_id": str(run_id),
             "parent_run_id": str(parent_run_id),
-            "content": json.dumps({"prompts": prompts}),
+            "content": self._truncate_content_safely(content_str),
             "metadata": json.dumps(_jsonify_safely(kwargs.get("metadata", {}))),
             "serialized": json.dumps(_jsonify_safely(serialized))
             if serialized
             else None,
             "tags": json.dumps(_jsonify_safely(tags or [])),
+            "is_truncated": len(content_str.encode("utf-8")) > self._max_content_length,
         }
         await self._log(data)
 
@@ -305,17 +319,15 @@ class AsyncBigQueryCallbackHandler(AsyncCallbackHandler):
         **kwargs: Any,
     ) -> Any:
         """Run when a new token is generated."""
+        content_str = json.dumps({"token": token})
         data = {
             "event_type": "LLM_NEW_TOKEN",
             "run_id": str(run_id),
             "parent_run_id": str(parent_run_id),
-            "content": json.dumps(
-                {
-                    "token": token,
-                }
-            ),
+            "content": self._truncate_content_safely(content_str),
             "metadata": json.dumps(_jsonify_safely(kwargs.get("metadata", {}))),
             "tags": json.dumps(_jsonify_safely(tags or [])),
+            "is_truncated": len(content_str.encode("utf-8")) > self._max_content_length,
         }
         await self._log(data)
 
@@ -331,14 +343,16 @@ class AsyncBigQueryCallbackHandler(AsyncCallbackHandler):
     ) -> Any:
         """Run when a chat model starts."""
         message_dicts = [[msg.dict() for msg in m] for m in messages]
+        content_str = json.dumps({"messages": _jsonify_safely(message_dicts)})
         data = {
             "event_type": "CHAT_MODEL_START",
             "run_id": str(run_id),
             "parent_run_id": str(parent_run_id),
-            "content": json.dumps({"messages": _jsonify_safely(message_dicts)}),
+            "content": self._truncate_content_safely(content_str),
             "metadata": json.dumps(_jsonify_safely(kwargs.get("metadata", {}))),
             "serialized": json.dumps(_jsonify_safely(serialized)) if serialized else None,
             "tags": json.dumps(_jsonify_safely(tags or [])),
+            "is_truncated": len(content_str.encode("utf-8")) > self._max_content_length,
         }
         await self._log(data)
 
@@ -355,13 +369,15 @@ class AsyncBigQueryCallbackHandler(AsyncCallbackHandler):
         metadata = kwargs.get("metadata") or {}
         for generations in response.generations:
             for generation in generations:
+                content_str = json.dumps({"response": generation.text})
                 data = {
                     "event_type": "LLM_RESPONSE",
                     "run_id": str(run_id),
                     "parent_run_id": str(parent_run_id),
-                    "content": json.dumps({"response": generation.text}),
+                    "content": self._truncate_content_safely(content_str),
                     "metadata": json.dumps(_jsonify_safely(metadata)),
                     "tags": json.dumps(_jsonify_safely(tags or [])),
+                    "is_truncated": len(content_str.encode("utf-8")) > self._max_content_length,
                 }
                 await self._log(data)
 
@@ -397,14 +413,16 @@ class AsyncBigQueryCallbackHandler(AsyncCallbackHandler):
         **kwargs: Any,
     ) -> None:
         """Run when chain starts running."""
+        content_str = json.dumps({"inputs": _jsonify_safely(inputs)})
         data = {
             "event_type": "CHAIN_START",
             "run_id": str(run_id),
             "parent_run_id": str(parent_run_id),
-            "content": json.dumps({"inputs": _jsonify_safely(inputs)}),
+            "content": self._truncate_content_safely(content_str),
             "metadata": json.dumps(_jsonify_safely(kwargs.get("metadata", {}))),
             "serialized": json.dumps(_jsonify_safely(serialized)) if serialized else None,
             "tags": json.dumps(_jsonify_safely(tags or [])),
+            "is_truncated": len(content_str.encode("utf-8")) > self._max_content_length,
         }
         await self._log(data)
 
@@ -418,13 +436,15 @@ class AsyncBigQueryCallbackHandler(AsyncCallbackHandler):
         **kwargs: Any,
     ) -> None:
         """Run on arbitrary text."""
+        content_str = json.dumps({"text": text})
         data = {
             "event_type": "TEXT",
             "run_id": str(run_id),
             "parent_run_id": str(parent_run_id),
-            "content": json.dumps({"text": text}),
+            "content": self._truncate_content_safely(content_str),
             "metadata": json.dumps(_jsonify_safely(kwargs.get("metadata", {}))),
             "tags": json.dumps(_jsonify_safely(tags or [])),
+            "is_truncated": len(content_str.encode("utf-8")) > self._max_content_length,
         }
         await self._log(data)
 
@@ -439,14 +459,16 @@ class AsyncBigQueryCallbackHandler(AsyncCallbackHandler):
         **kwargs: Any,
     ) -> Any:
         """Run when a retriever starts."""
+        content_str = json.dumps({"query": query})
         data = {
             "event_type": "RETRIEVER_START",
             "run_id": str(run_id),
             "parent_run_id": str(parent_run_id),
-            "content": json.dumps({"query": query}),
+            "content": self._truncate_content_safely(content_str),
             "metadata": json.dumps(_jsonify_safely(kwargs.get("metadata", {}))),
             "serialized": json.dumps(_jsonify_safely(serialized)) if serialized else None,
             "tags": json.dumps(_jsonify_safely(tags or [])),
+            "is_truncated": len(content_str.encode("utf-8")) > self._max_content_length,
         }
         await self._log(data)
 
@@ -461,13 +483,15 @@ class AsyncBigQueryCallbackHandler(AsyncCallbackHandler):
     ) -> Any:
         """Run when a retriever ends."""
         docs = [doc.dict() for doc in documents]
+        content_str = json.dumps({"documents": _jsonify_safely(docs)})
         data = {
             "event_type": "RETRIEVER_END",
             "run_id": str(run_id),
             "parent_run_id": str(parent_run_id),
-            "content": json.dumps({"documents": _jsonify_safely(docs)}),
+            "content": self._truncate_content_safely(content_str),
             "metadata": json.dumps(_jsonify_safely(kwargs.get("metadata", {}))),
             "tags": json.dumps(_jsonify_safely(tags or [])),
+            "is_truncated": len(content_str.encode("utf-8")) > self._max_content_length,
         }
         await self._log(data)
 
@@ -529,13 +553,15 @@ class AsyncBigQueryCallbackHandler(AsyncCallbackHandler):
         **kwargs: Any,
     ) -> None:
         """Run when chain ends running."""
+        content_str = json.dumps({"outputs": _jsonify_safely(outputs)})
         data = {
             "event_type": "CHAIN_END",
             "run_id": str(run_id),
             "parent_run_id": str(parent_run_id),
-            "content": json.dumps({"outputs": _jsonify_safely(outputs)}),
+            "content": self._truncate_content_safely(content_str),
             "metadata": json.dumps(_jsonify_safely(kwargs.get("metadata", {}))),
             "tags": json.dumps(_jsonify_safely(kwargs.get("tags", []))),
+            "is_truncated": len(content_str.encode("utf-8")) > self._max_content_length,
         }
         await self._log(data)
 
@@ -571,14 +597,16 @@ class AsyncBigQueryCallbackHandler(AsyncCallbackHandler):
         **kwargs: Any,
     ) -> None:
         """Run when tool starts running."""
+        content_str = json.dumps({"input": input_str})
         data = {
             "event_type": "TOOL_START",
             "run_id": str(run_id),
             "parent_run_id": str(parent_run_id),
-            "content": json.dumps({"input": input_str}),
+            "content": self._truncate_content_safely(content_str),
             "metadata": json.dumps(_jsonify_safely(kwargs.get("metadata", {}))),
             "serialized": json.dumps(_jsonify_safely(serialized)) if serialized else None,
             "tags": json.dumps(_jsonify_safely(tags or [])),
+            "is_truncated": len(content_str.encode("utf-8")) > self._max_content_length,
         }
         await self._log(data)
 
@@ -592,13 +620,15 @@ class AsyncBigQueryCallbackHandler(AsyncCallbackHandler):
         **kwargs: Any,
     ) -> None:
         """Run when tool ends running."""
+        content_str = json.dumps({"output": str(output)})
         data = {
             "event_type": "TOOL_END",
             "run_id": str(run_id),
             "parent_run_id": str(parent_run_id),
-            "content": json.dumps({"output": str(output)}),
+            "content": self._truncate_content_safely(content_str),
             "metadata": json.dumps(_jsonify_safely(kwargs.get("metadata", {}))),
             "tags": json.dumps(_jsonify_safely(tags or [])),
+            "is_truncated": len(content_str.encode("utf-8")) > self._max_content_length,
         }
         await self._log(data)
 
@@ -633,13 +663,15 @@ class AsyncBigQueryCallbackHandler(AsyncCallbackHandler):
         **kwargs: Any,
     ) -> Any:
         """Run on agent action."""
+        content_str = json.dumps({"tool": action.tool, "input": str(action.tool_input)})
         data = {
             "event_type": "AGENT_ACTION",
             "run_id": str(run_id),
             "parent_run_id": str(parent_run_id),
-            "content": json.dumps({"tool": action.tool, "input": str(action.tool_input)}),
+            "content": self._truncate_content_safely(content_str),
             "metadata": json.dumps(_jsonify_safely(kwargs.get("metadata", {}))),
             "tags": json.dumps(_jsonify_safely(tags or [])),
+            "is_truncated": len(content_str.encode("utf-8")) > self._max_content_length,
         }
         await self._log(data)
 
@@ -653,13 +685,15 @@ class AsyncBigQueryCallbackHandler(AsyncCallbackHandler):
         **kwargs: Any,
     ) -> None:
         """Run when agent ends running."""
+        content_str = json.dumps({"output": _jsonify_safely(finish.return_values)})
         data = {
             "event_type": "AGENT_FINISH",
             "run_id": str(run_id),
             "parent_run_id": str(parent_run_id),
-            "content": json.dumps({"output": _jsonify_safely(finish.return_values)}),
+            "content": self._truncate_content_safely(content_str),
             "metadata": json.dumps(_jsonify_safely(kwargs.get("metadata", {}))),
             "tags": json.dumps(_jsonify_safely(tags or [])),
+            "is_truncated": len(content_str.encode("utf-8")) > self._max_content_length,
         }
         await self._log(data)
 
@@ -681,6 +715,7 @@ class BigQueryCallbackHandler(BaseCallbackHandler):
         project_id: str,
         dataset_id: str,
         table_id: str = "agent_events",
+        max_content_length: int = 200 * 1024,
     ):
         """Initializes the BigQueryCallbackHandler.
 
@@ -688,6 +723,7 @@ class BigQueryCallbackHandler(BaseCallbackHandler):
           project_id: Google Cloud project ID.
           dataset_id: BigQuery dataset ID.
           table_id: BigQuery table ID for agent events.
+          max_content_length: The maximum length of content to log before truncating.
         """
         super().__init__()
         (
@@ -705,6 +741,7 @@ class BigQueryCallbackHandler(BaseCallbackHandler):
             dataset_id,
             table_id,
         )
+        self._max_content_length = max_content_length
         self._bq_client = None
         self._write_client = None
         self._init_lock = threading.Lock()
@@ -719,6 +756,7 @@ class BigQueryCallbackHandler(BaseCallbackHandler):
             self.bigquery.SchemaField("tags", "STRING"),
             self.bigquery.SchemaField("metadata", "STRING"),
             self.bigquery.SchemaField("error_message", "STRING"),
+            self.bigquery.SchemaField("is_truncated", "BOOLEAN"),
         ]
         self.action_records: list = []
 
@@ -829,6 +867,13 @@ class BigQueryCallbackHandler(BaseCallbackHandler):
         ]
         return self.pa.schema(arrow_fields)
 
+    def _truncate_content_safely(self, content: str) -> str:
+        """Truncates the content string if it exceeds the configured max length."""
+        if len(content.encode("utf-8")) > self._max_content_length:
+            truncated_content = content.encode("utf-8")[: self._max_content_length].decode("utf-8", "ignore")
+            return f"{truncated_content} [TRUNCATED_MAX_BYTES:{self._max_content_length}]"
+        return content
+
     def _log(self, data: dict) -> None:
         """Schedules a log entry to be written."""
         row = {
@@ -841,6 +886,7 @@ class BigQueryCallbackHandler(BaseCallbackHandler):
             "tags": None,
             "metadata": None,
             "error_message": None,
+            "is_truncated": False,
         }
         row.update(data)
 
@@ -886,16 +932,18 @@ class BigQueryCallbackHandler(BaseCallbackHandler):
         **kwargs: Any,
     ) -> None:
         """Run when LLM starts."""
+        content_str = json.dumps({"prompts": prompts})
         data = {
             "event_type": "LLM_START",
             "run_id": str(run_id),
             "parent_run_id": str(parent_run_id),
-            "content": json.dumps({"prompts": prompts}),
+            "content": self._truncate_content_safely(content_str),
             "metadata": json.dumps(_jsonify_safely(kwargs.get("metadata", {}))),
             "serialized": json.dumps(_jsonify_safely(serialized))
             if serialized
             else None,
             "tags": json.dumps(_jsonify_safely(tags or [])),
+            "is_truncated": len(content_str.encode("utf-8")) > self._max_content_length,
         }
         self._log(data)
 
@@ -911,14 +959,16 @@ class BigQueryCallbackHandler(BaseCallbackHandler):
     ) -> Any:
         """Run when a chat model starts."""
         message_dicts = [[msg.dict() for msg in m] for m in messages]
+        content_str = json.dumps({"messages": _jsonify_safely(message_dicts)})
         data = {
             "event_type": "CHAT_MODEL_START",
             "run_id": str(run_id),
             "parent_run_id": str(parent_run_id),
-            "content": json.dumps({"messages": _jsonify_safely(message_dicts)}),
+            "content": self._truncate_content_safely(content_str),
             "metadata": json.dumps(_jsonify_safely(kwargs.get("metadata", {}))),
             "serialized": json.dumps(_jsonify_safely(serialized)) if serialized else None,
             "tags": json.dumps(_jsonify_safely(tags or [])),
+            "is_truncated": len(content_str.encode("utf-8")) > self._max_content_length,
         }
         self._log(data)
 
@@ -935,13 +985,15 @@ class BigQueryCallbackHandler(BaseCallbackHandler):
         metadata = kwargs.get("metadata") or {}
         for generations in response.generations:
             for generation in generations:
+                content_str = json.dumps({"response": generation.text})
                 data = {
                     "event_type": "LLM_RESPONSE",
                     "run_id": str(run_id),
                     "parent_run_id": str(parent_run_id),
-                    "content": json.dumps({"response": generation.text}),
+                    "content": self._truncate_content_safely(content_str),
                     "metadata": json.dumps(_jsonify_safely(metadata)),
                     "tags": json.dumps(_jsonify_safely(tags or [])),
+                    "is_truncated": len(content_str.encode("utf-8")) > self._max_content_length,
                 }
                 self._log(data)
 
@@ -956,17 +1008,15 @@ class BigQueryCallbackHandler(BaseCallbackHandler):
         **kwargs: Any,
     ) -> Any:
         """Run when a new token is generated."""
+        content_str = json.dumps({"token": token})
         data = {
             "event_type": "LLM_NEW_TOKEN",
             "run_id": str(run_id),
             "parent_run_id": str(parent_run_id),
-            "content": json.dumps(
-                {
-                    "token": token,
-                }
-            ),
+            "content": self._truncate_content_safely(content_str),
             "metadata": json.dumps(_jsonify_safely(kwargs.get("metadata", {}))),
             "tags": json.dumps(_jsonify_safely(tags or [])),
+            "is_truncated": len(content_str.encode("utf-8")) > self._max_content_length,
         }
         self._log(data)
 
@@ -981,16 +1031,18 @@ class BigQueryCallbackHandler(BaseCallbackHandler):
         **kwargs: Any,
     ) -> None:
         """Run when chain starts running."""
+        content_str = json.dumps({"inputs": _jsonify_safely(inputs)})
         data = {
             "event_type": "CHAIN_START",
             "run_id": str(run_id),
             "parent_run_id": str(parent_run_id),
-            "content": json.dumps({"inputs": _jsonify_safely(inputs)}),
+            "content": self._truncate_content_safely(content_str),
             "metadata": json.dumps(_jsonify_safely(kwargs.get("metadata", {}))),
             "serialized": json.dumps(_jsonify_safely(serialized))
             if serialized
             else None,
             "tags": json.dumps(_jsonify_safely(tags or [])),
+            "is_truncated": len(content_str.encode("utf-8")) > self._max_content_length,
         }
         self._log(data)
 
@@ -1004,13 +1056,15 @@ class BigQueryCallbackHandler(BaseCallbackHandler):
         **kwargs: Any,
     ) -> None:
         """Run when chain ends running."""
+        content_str = json.dumps({"outputs": _jsonify_safely(outputs)})
         data = {
             "event_type": "CHAIN_END",
             "run_id": str(run_id),
             "parent_run_id": str(parent_run_id),
-            "content": json.dumps({"outputs": _jsonify_safely(outputs)}),
+            "content": self._truncate_content_safely(content_str),
             "metadata": json.dumps(_jsonify_safely(kwargs.get("metadata", {}))),
             "tags": json.dumps(_jsonify_safely(tags or [])),
+            "is_truncated": len(content_str.encode("utf-8")) > self._max_content_length,
         }
         self._log(data)
 
@@ -1046,16 +1100,18 @@ class BigQueryCallbackHandler(BaseCallbackHandler):
         **kwargs: Any,
     ) -> None:
         """Run when tool starts running."""
+        content_str = json.dumps({"input": input_str})
         data = {
             "event_type": "TOOL_START",
             "run_id": str(run_id),
             "parent_run_id": str(parent_run_id),
-            "content": json.dumps({"input": input_str}),
+            "content": self._truncate_content_safely(content_str),
             "metadata": json.dumps(_jsonify_safely(kwargs.get("metadata", {}))),
             "serialized": json.dumps(_jsonify_safely(serialized))
             if serialized
             else None,
             "tags": json.dumps(_jsonify_safely(tags or [])),
+            "is_truncated": len(content_str.encode("utf-8")) > self._max_content_length,
         }
         self._log(data)
 
@@ -1069,13 +1125,15 @@ class BigQueryCallbackHandler(BaseCallbackHandler):
         **kwargs: Any,
     ) -> None:
         """Run when tool ends running."""
+        content_str = json.dumps({"output": str(output)})
         data = {
             "event_type": "TOOL_END",
             "run_id": str(run_id),
             "parent_run_id": str(parent_run_id),
-            "content": json.dumps({"output": str(output)}),
+            "content": self._truncate_content_safely(content_str),
             "metadata": json.dumps(_jsonify_safely(kwargs.get("metadata", {}))),
             "tags": json.dumps(_jsonify_safely(tags or [])),
+            "is_truncated": len(content_str.encode("utf-8")) > self._max_content_length,
         }
         self._log(data)
 
@@ -1110,13 +1168,15 @@ class BigQueryCallbackHandler(BaseCallbackHandler):
         **kwargs: Any,
     ) -> None:
         """Run on arbitrary text."""
+        content_str = json.dumps({"text": text})
         data = {
             "event_type": "TEXT",
             "run_id": str(run_id),
             "parent_run_id": str(parent_run_id),
-            "content": json.dumps({"text": text}),
+            "content": self._truncate_content_safely(content_str),
             "metadata": json.dumps(_jsonify_safely(kwargs.get("metadata", {}))),
             "tags": json.dumps(_jsonify_safely(tags or [])),
+            "is_truncated": len(content_str.encode("utf-8")) > self._max_content_length,
         }
         self._log(data)
 
@@ -1130,15 +1190,15 @@ class BigQueryCallbackHandler(BaseCallbackHandler):
         **kwargs: Any,
     ) -> Any:
         """Run on agent action."""
+        content_str = json.dumps({"tool": action.tool, "input": str(action.tool_input)})
         data = {
             "event_type": "AGENT_ACTION",
             "run_id": str(run_id),
             "parent_run_id": str(parent_run_id),
-            "content": json.dumps(
-                {"tool": action.tool, "input": str(action.tool_input)}
-            ),
+            "content": self._truncate_content_safely(content_str),
             "metadata": json.dumps(_jsonify_safely(kwargs.get("metadata", {}))),
             "tags": json.dumps(_jsonify_safely(tags or [])),
+            "is_truncated": len(content_str.encode("utf-8")) > self._max_content_length,
         }
         self._log(data)
 
@@ -1152,13 +1212,15 @@ class BigQueryCallbackHandler(BaseCallbackHandler):
         **kwargs: Any,
     ) -> None:
         """Run when agent ends running."""
+        content_str = json.dumps({"output": _jsonify_safely(finish.return_values)})
         data = {
             "event_type": "AGENT_FINISH",
             "run_id": str(run_id),
             "parent_run_id": str(parent_run_id),
-            "content": json.dumps({"output": _jsonify_safely(finish.return_values)}),
+            "content": self._truncate_content_safely(content_str),
             "metadata": json.dumps(_jsonify_safely(kwargs.get("metadata", {}))),
             "tags": json.dumps(_jsonify_safely(tags or [])),
+            "is_truncated": len(content_str.encode("utf-8")) > self._max_content_length,
         }
         self._log(data)
 
@@ -1173,16 +1235,18 @@ class BigQueryCallbackHandler(BaseCallbackHandler):
         **kwargs: Any,
     ) -> Any:
         """Run when a retriever starts."""
+        content_str = json.dumps({"query": query})
         data = {
             "event_type": "RETRIEVER_START",
             "run_id": str(run_id),
             "parent_run_id": str(parent_run_id),
-            "content": json.dumps({"query": query}),
+            "content": self._truncate_content_safely(content_str),
             "metadata": json.dumps(_jsonify_safely(kwargs.get("metadata", {}))),
             "serialized": json.dumps(_jsonify_safely(serialized))
             if serialized
             else None,
             "tags": json.dumps(_jsonify_safely(tags or [])),
+            "is_truncated": len(content_str.encode("utf-8")) > self._max_content_length,
         }
         self._log(data)
 
@@ -1197,13 +1261,15 @@ class BigQueryCallbackHandler(BaseCallbackHandler):
     ) -> Any:
         """Run when a retriever ends."""
         docs = [doc.dict() for doc in documents]
+        content_str = json.dumps({"documents": _jsonify_safely(docs)})
         data = {
             "event_type": "RETRIEVER_END",
             "run_id": str(run_id),
             "parent_run_id": str(parent_run_id),
-            "content": json.dumps({"documents": _jsonify_safely(docs)}),
+            "content": self._truncate_content_safely(content_str),
             "metadata": json.dumps(_jsonify_safely(kwargs.get("metadata", {}))),
             "tags": json.dumps(_jsonify_safely(tags or [])),
+            "is_truncated": len(content_str.encode("utf-8")) > self._max_content_length,
         }
         self._log(data)
 
